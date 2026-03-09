@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Node.js
+node_modules/
+.next/
+out/
+
+# 環境變數與敏感資料
+.env
+.env.local
+.env.*.local
+
+# Docker compose (含真實連線資訊)
+docker-compose.yml
+docker-compose.override.yml
+
+# 資料目錄
+data/
+*.db
+*.sqlite
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
