@@ -1,7 +1,9 @@
 from pydantic_settings import BaseSettings
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+# Docker: /app/app/config.py -> /app
+# Local:  backend/app/config.py -> backend
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 class Settings(BaseSettings):
     database_url: str = f"sqlite+aiosqlite:///{BASE_DIR}/data/maximo.db"
