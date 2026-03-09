@@ -12,13 +12,19 @@ router = APIRouter(prefix="/api/connection", tags=["connection"])
 class ConnectionCreate(BaseModel):
     name: str = "Default"
     base_url: str
-    api_key: str
+    auth_type: str = "apikey"  # apikey or maxauth
+    api_key: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
     tenant_id: Optional[int] = None
 
 class ConnectionUpdate(BaseModel):
     name: Optional[str] = None
     base_url: Optional[str] = None
+    auth_type: Optional[str] = None
     api_key: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
     tenant_id: Optional[int] = None
 
 def connection_to_dict(conn: Connection) -> dict:
@@ -26,10 +32,22 @@ def connection_to_dict(conn: Connection) -> dict:
         "id": conn.id,
         "name": conn.name,
         "base_url": conn.base_url,
+        "auth_type": conn.auth_type or "apikey",
         "api_key": conn.api_key,
+        "username": conn.username,
+        "password": conn.password,
         "is_active": conn.is_active,
         "tenant_id": conn.tenant_id,
     }
+
+def create_maximo_client(conn: Connection) -> MaximoClient:
+    return MaximoClient(
+        base_url=conn.base_url,
+        api_key=conn.api_key,
+        auth_type=conn.auth_type or "apikey",
+        username=conn.username,
+        password=conn.password,
+    )
 
 @router.get("")
 async def get_connection(
@@ -73,8 +91,11 @@ async def create_connection(data: ConnectionCreate, db: AsyncSession = Depends(g
     
     conn = Connection(
         name=data.name, 
-        base_url=data.base_url, 
-        api_key=data.api_key, 
+        base_url=data.base_url,
+        auth_type=data.auth_type,
+        api_key=data.api_key,
+        username=data.username,
+        password=data.password,
         is_active=True,
         tenant_id=data.tenant_id
     )
@@ -93,8 +114,14 @@ async def update_connection(conn_id: int, data: ConnectionUpdate, db: AsyncSessi
         conn.name = data.name
     if data.base_url is not None:
         conn.base_url = data.base_url
+    if data.auth_type is not None:
+        conn.auth_type = data.auth_type
     if data.api_key is not None:
         conn.api_key = data.api_key
+    if data.username is not None:
+        conn.username = data.username
+    if data.password is not None:
+        conn.password = data.password
     if data.tenant_id is not None:
         conn.tenant_id = data.tenant_id
     await db.commit()
@@ -112,7 +139,13 @@ async def delete_connection(conn_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/test")
 async def test_connection(data: ConnectionCreate):
-    client = MaximoClient(data.base_url, data.api_key)
+    client = MaximoClient(
+        base_url=data.base_url,
+        api_key=data.api_key,
+        auth_type=data.auth_type,
+        username=data.username,
+        password=data.password,
+    )
     try:
         result = await client.test_connection()
         return {"success": True, **result}
@@ -133,7 +166,7 @@ async def get_object_structures(
     conn = result.scalar_one_or_none()
     if not conn:
         raise HTTPException(400, "No active connection configured")
-    client = MaximoClient(conn.base_url, conn.api_key)
+    client = create_maximo_client(conn)
     structures = await client.list_object_structures()
     return structures
 
@@ -152,7 +185,7 @@ async def get_fields(
     conn = result.scalar_one_or_none()
     if not conn:
         raise HTTPException(400, "No active connection configured")
-    client = MaximoClient(conn.base_url, conn.api_key)
+    client = create_maximo_client(conn)
     try:
         fields = await client.get_fields(object_structure)
         return fields

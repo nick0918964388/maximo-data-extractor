@@ -1,15 +1,21 @@
 import httpx
 import json
+import base64
 from typing import Optional
 
 class MaximoClient:
-    def __init__(self, base_url: str, api_key: str):
+    def __init__(self, base_url: str, api_key: str = None, auth_type: str = "apikey", 
+                 username: str = None, password: str = None):
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
-        self.headers = {
-            "apikey": api_key,
-            "Accept": "application/json",
-        }
+        self.auth_type = auth_type
+        self.headers = {"Accept": "application/json"}
+        
+        if auth_type == "maxauth" and username and password:
+            # MAXAUTH: Base64 encode username:password
+            credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+            self.headers["maxauth"] = credentials
+        elif api_key:
+            self.headers["apikey"] = api_key
 
     async def test_connection(self) -> dict:
         url = f"{self.base_url}/oslc/os/mxwo"

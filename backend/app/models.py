@@ -18,7 +18,10 @@ class Connection(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), default="Default")
     base_url = Column(String(500), nullable=False)
-    api_key = Column(String(200), nullable=False)
+    auth_type = Column(String(20), default="apikey")  # apikey or maxauth
+    api_key = Column(String(200), nullable=True)
+    username = Column(String(100), nullable=True)
+    password = Column(String(200), nullable=True)
     is_active = Column(Boolean, default=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True)
     created_at = Column(DateTime, server_default=func.now())

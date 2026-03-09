@@ -29,6 +29,10 @@ async def init_db():
         "ALTER TABLE transfer_configs ADD COLUMN database TEXT DEFAULT 'finrecorder'",
         "ALTER TABLE transfer_configs ADD COLUMN write_mode TEXT DEFAULT 'APPEND'",
         "ALTER TABLE transfer_configs ADD COLUMN upsert_key TEXT DEFAULT ''",
+        # Add MAXAUTH support
+        "ALTER TABLE connections ADD COLUMN auth_type TEXT DEFAULT 'apikey'",
+        "ALTER TABLE connections ADD COLUMN username TEXT",
+        "ALTER TABLE connections ADD COLUMN password TEXT",
     ]
     
     async with engine.begin() as conn:

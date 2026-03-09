@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { CheckCircle, XCircle, Loader2, Trash2, Plus } from 'lucide-react'
 import { getConnection, listConnections, saveConnection, updateConnection, deleteConnection, testConnection } from '../api/index.js'
 import { useTenant } from '../App.jsx'
@@ -20,11 +20,20 @@ export default function ConnectionPage() {
 
   const selectedConn = connections.find(c => c.id === selectedConnId)
 
-  const { register, handleSubmit, getValues, reset, formState: { errors } } = useForm({
+  const { register, handleSubmit, getValues, reset, control, formState: { errors } } = useForm({
     values: selectedConn 
-      ? { name: selectedConn.name, base_url: selectedConn.base_url, api_key: selectedConn.api_key } 
-      : { name: '', base_url: '', api_key: '' },
+      ? { 
+          name: selectedConn.name, 
+          base_url: selectedConn.base_url, 
+          auth_type: selectedConn.auth_type || 'apikey',
+          api_key: selectedConn.api_key || '',
+          username: selectedConn.username || '',
+          password: selectedConn.password || '',
+        } 
+      : { name: '', base_url: '', auth_type: 'apikey', api_key: '', username: '', password: '' },
   })
+
+  const authType = useWatch({ control, name: 'auth_type' })
 
   const saveMutation = useMutation({
     mutationFn: (data) => {
@@ -67,7 +76,7 @@ export default function ConnectionPage() {
 
   const handleNew = () => {
     setSelectedConnId(null)
-    reset({ name: '', base_url: '', api_key: '' })
+    reset({ name: '', base_url: '', auth_type: 'apikey', api_key: '', username: '', password: '' })
     setShowForm(true)
     setTestResult(null)
   }
@@ -95,6 +104,7 @@ export default function ConnectionPage() {
               <tr>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">名稱</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Base URL</th>
+                <th className="text-center px-4 py-3 font-medium text-gray-600">認證方式</th>
                 <th className="text-center px-4 py-3 font-medium text-gray-600">狀態</th>
                 <th className="text-center px-4 py-3 font-medium text-gray-600">操作</th>
               </tr>
@@ -104,6 +114,15 @@ export default function ConnectionPage() {
                 <tr key={conn.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium">{conn.name}</td>
                   <td className="px-4 py-3 text-gray-500 font-mono text-xs">{conn.base_url}</td>
+                  <td className="px-4 py-3 text-center">
+                    <span className={`text-xs px-2 py-1 rounded-full ${
+                      conn.auth_type === 'maxauth' 
+                        ? 'bg-purple-100 text-purple-700' 
+                        : 'bg-blue-100 text-blue-700'
+                    }`}>
+                      {conn.auth_type === 'maxauth' ? 'MAXAUTH' : 'API Key'}
+                    </span>
+                  </td>
                   <td className="px-4 py-3 text-center">
                     {conn.is_active ? (
                       <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">啟用中</span>
@@ -169,21 +188,68 @@ export default function ConnectionPage() {
             <input
               {...register('base_url', { required: 'Base URL 必填' })}
               className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="https://maximo.example.com"
+              placeholder="https://maximo.example.com/maximo"
             />
             {errors.base_url && <p className="text-red-500 text-sm mt-1">{errors.base_url.message}</p>}
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">API Key <span className="text-red-500">*</span></label>
-            <input
-              {...register('api_key', { required: 'API Key 必填' })}
-              type="password"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
-              placeholder="apikey..."
-            />
-            {errors.api_key && <p className="text-red-500 text-sm mt-1">{errors.api_key.message}</p>}
+            <label className="block text-sm font-medium text-gray-700 mb-2">認證方式 <span className="text-red-500">*</span></label>
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  {...register('auth_type')}
+                  type="radio"
+                  value="apikey"
+                  className="w-4 h-4 text-blue-600"
+                />
+                <span className="text-sm">API Key</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  {...register('auth_type')}
+                  type="radio"
+                  value="maxauth"
+                  className="w-4 h-4 text-blue-600"
+                />
+                <span className="text-sm">MAXAUTH (帳號密碼)</span>
+              </label>
+            </div>
           </div>
+
+          {authType === 'apikey' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">API Key <span className="text-red-500">*</span></label>
+              <input
+                {...register('api_key')}
+                type="password"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                placeholder="apikey..."
+              />
+            </div>
+          )}
+
+          {authType === 'maxauth' && (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">帳號 <span className="text-red-500">*</span></label>
+                <input
+                  {...register('username')}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="MAXADMIN"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">密碼 <span className="text-red-500">*</span></label>
+                <input
+                  {...register('password')}
+                  type="password"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
+          )}
 
           {/* Test Result */}
           {testResult && (
@@ -234,10 +300,10 @@ export default function ConnectionPage() {
 
       <div className="mt-6 bg-blue-50 border border-blue-200 rounded-xl p-4">
         <h3 className="font-semibold text-blue-800 mb-2">認證說明</h3>
-        <p className="text-sm text-blue-700">
-          本工具使用 <code className="bg-blue-100 px-1 rounded">apikey</code> Header 認證方式連接 IBM Maximo OSLC API。
-          請確保 API Key 具有存取所需 Object Structure 的權限。
-        </p>
+        <ul className="text-sm text-blue-700 space-y-1">
+          <li><strong>API Key</strong>：使用 <code className="bg-blue-100 px-1 rounded">apikey</code> Header 認證</li>
+          <li><strong>MAXAUTH</strong>：使用帳號密碼 Base64 編碼後透過 <code className="bg-blue-100 px-1 rounded">maxauth</code> Header 認證</li>
+        </ul>
       </div>
     </div>
   )

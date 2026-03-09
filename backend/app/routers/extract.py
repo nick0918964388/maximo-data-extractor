@@ -65,7 +65,13 @@ async def do_extract(profile_id: int):
         }
 
         fields = json.loads(profile.fields) if profile.fields else None
-        client = MaximoClient(conn.base_url, conn.api_key)
+        client = MaximoClient(
+            base_url=conn.base_url,
+            api_key=conn.api_key,
+            auth_type=conn.auth_type or "apikey",
+            username=conn.username,
+            password=conn.password,
+        )
         start_time = time.time()
 
         try:
