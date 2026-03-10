@@ -204,7 +204,10 @@ async def do_extract(profile_id: int):
                 )
                 history.transfer_status = result_t["status"]
                 if result_t["status"] == "success":
-                    _log(profile_id, f"PostgreSQL 寫入成功: {result_t.get('table', '')} ({result_t.get('records', 0)} 筆)")
+                    _log(profile_id, f"PostgreSQL 主表寫入成功: {result_t.get('table', '')} ({result_t.get('records', 0)} 筆)")
+                    child_tables = result_t.get("child_tables", {})
+                    for ct_name, ct_count in child_tables.items():
+                        _log(profile_id, f"  子表 {ct_name}: {ct_count} 筆")
                 else:
                     err_msg = result_t.get("error", "未知錯誤")
                     _log(profile_id, f"PostgreSQL 寫入失敗: {err_msg}")
