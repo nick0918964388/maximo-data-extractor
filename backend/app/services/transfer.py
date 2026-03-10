@@ -38,6 +38,17 @@ class PostgreSQLTransfer:
             col_defs = ", ".join([f'"{c}" TEXT' for c in columns])
             cur.execute(f'CREATE TABLE IF NOT EXISTS "{table_name}" ({col_defs})')
 
+            # Ensure unique constraint on upsert key if UPSERT mode
+            if self.write_mode == "UPSERT" and self.upsert_key and self.upsert_key in columns:
+                constraint_name = f"uq_{table_name}_{self.upsert_key}"
+                cur.execute(f"""
+                    DO $$ BEGIN
+                        ALTER TABLE "{table_name}" ADD CONSTRAINT "{constraint_name}"
+                            UNIQUE ("{self.upsert_key}");
+                    EXCEPTION WHEN duplicate_table THEN NULL;
+                    END $$;
+                """)
+
             # Add any missing columns (schema evolution)
             cur.execute(
                 "SELECT column_name FROM information_schema.columns WHERE table_name = %s",

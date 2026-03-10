@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm, useWatch } from 'react-hook-form'
 import { CheckCircle, XCircle, Loader2, Trash2, Plus } from 'lucide-react'
-import { getConnection, listConnections, saveConnection, updateConnection, deleteConnection, testConnection } from '../api/index.js'
+import { getConnection, listConnections, saveConnection, updateConnection, deleteConnection, testConnection, testPgConnection } from '../api/index.js'
 import { useTenant } from '../App.jsx'
 
 export default function ConnectionPage() {
@@ -10,6 +10,8 @@ export default function ConnectionPage() {
   const { tenantId } = useTenant()
   const [testResult, setTestResult] = useState(null)
   const [testing, setTesting] = useState(false)
+  const [pgTestResult, setPgTestResult] = useState(null)
+  const [pgTesting, setPgTesting] = useState(false)
   const [selectedConnId, setSelectedConnId] = useState(null)
   const [showForm, setShowForm] = useState(false)
 
@@ -21,16 +23,22 @@ export default function ConnectionPage() {
   const selectedConn = connections.find(c => c.id === selectedConnId)
 
   const { register, handleSubmit, getValues, reset, control, formState: { errors } } = useForm({
-    values: selectedConn 
-      ? { 
-          name: selectedConn.name, 
-          base_url: selectedConn.base_url, 
+    values: selectedConn
+      ? {
+          name: selectedConn.name,
+          base_url: selectedConn.base_url,
+          original_host: selectedConn.original_host || '',
           auth_type: selectedConn.auth_type || 'apikey',
           api_key: selectedConn.api_key || '',
           username: selectedConn.username || '',
           password: selectedConn.password || '',
-        } 
-      : { name: '', base_url: '', auth_type: 'apikey', api_key: '', username: '', password: '' },
+          pg_host: selectedConn.pg_host || '',
+          pg_port: selectedConn.pg_port || 5432,
+          pg_database: selectedConn.pg_database || '',
+          pg_username: selectedConn.pg_username || '',
+          pg_password: selectedConn.pg_password || '',
+        }
+      : { name: '', base_url: '', original_host: '', auth_type: 'apikey', api_key: '', username: '', password: '', pg_host: '', pg_port: 5432, pg_database: '', pg_username: '', pg_password: '' },
   })
 
   const authType = useWatch({ control, name: 'auth_type' })
@@ -68,17 +76,34 @@ export default function ConnectionPage() {
     setTesting(false)
   }
 
+  const onTestPg = async () => {
+    setPgTesting(true)
+    setPgTestResult(null)
+    const values = getValues()
+    const result = await testPgConnection({
+      pg_host: values.pg_host,
+      pg_port: parseInt(values.pg_port),
+      pg_database: values.pg_database,
+      pg_username: values.pg_username,
+      pg_password: values.pg_password,
+    })
+    setPgTestResult(result)
+    setPgTesting(false)
+  }
+
   const handleEdit = (conn) => {
     setSelectedConnId(conn.id)
     setShowForm(true)
     setTestResult(null)
+    setPgTestResult(null)
   }
 
   const handleNew = () => {
     setSelectedConnId(null)
-    reset({ name: '', base_url: '', auth_type: 'apikey', api_key: '', username: '', password: '' })
+    reset({ name: '', base_url: '', original_host: '', auth_type: 'apikey', api_key: '', username: '', password: '', pg_host: '', pg_port: 5432, pg_database: '', pg_username: '', pg_password: '' })
     setShowForm(true)
     setTestResult(null)
+    setPgTestResult(null)
   }
 
   if (isLoading) return <div className="flex justify-center py-12"><Loader2 className="w-8 h-8 animate-spin text-blue-500" /></div>
@@ -113,7 +138,12 @@ export default function ConnectionPage() {
               {connections.map(conn => (
                 <tr key={conn.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium">{conn.name}</td>
-                  <td className="px-4 py-3 text-gray-500 font-mono text-xs">{conn.base_url}</td>
+                  <td className="px-4 py-3 text-gray-500 font-mono text-xs">
+                    {conn.base_url}
+                    {conn.original_host && (
+                      <span className="ml-2 text-gray-400">→ {conn.original_host}</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-center">
                     <span className={`text-xs px-2 py-1 rounded-full ${
                       conn.auth_type === 'maxauth' 
@@ -194,6 +224,16 @@ export default function ConnectionPage() {
           </div>
 
           <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">原始主機位址</label>
+            <input
+              {...register('original_host')}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="例：192.168.36.61（透過 SSH Tunnel 時填寫實際主機 IP）"
+            />
+            <p className="text-xs text-gray-400 mt-1">選填，用於記錄 SSH Tunnel 背後的實際 Maximo 主機位址</p>
+          </div>
+
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">認證方式 <span className="text-red-500">*</span></label>
             <div className="flex gap-4">
               <label className="flex items-center gap-2 cursor-pointer">
@@ -258,15 +298,66 @@ export default function ConnectionPage() {
                 ? <CheckCircle className="w-5 h-5 flex-shrink-0" />
                 : <XCircle className="w-5 h-5 flex-shrink-0" />}
               <span className="text-sm">
-                {testResult.success ? '連線成功！' : `連線失敗：${testResult.error}`}
+                {testResult.success ? 'Maximo 連線成功！' : `連線失敗：${testResult.error}`}
               </span>
             </div>
           )}
 
-          <div className="flex gap-3 pt-2">
+          {/* PostgreSQL Push Settings */}
+          <div className="border-t pt-5 mt-2">
+            <h4 className="text-base font-semibold text-gray-700 mb-3">PostgreSQL 推送設定</h4>
+            <p className="text-xs text-gray-400 mb-3">抽取資料後自動推送至 PostgreSQL，此連線下的所有抽取設定共用此設定</p>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <label className="block text-sm font-medium text-gray-700 mb-1">主機 (Host)</label>
+                <input {...register('pg_host')} className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="postgres" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Port</label>
+                <input {...register('pg_port')} type="number" className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="5432" />
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <label className="block text-sm font-medium text-gray-700 mb-1">資料庫名稱</label>
+              <input {...register('pg_database')} className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="maximo_data" />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">帳號</label>
+                <input {...register('pg_username')} className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">密碼</label>
+                <input {...register('pg_password')} type="password" className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+            </div>
+
+            <div className="mt-3 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={onTestPg}
+                disabled={pgTesting}
+                className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50 text-sm transition-colors"
+              >
+                {pgTesting ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                測試 PG 連線
+              </button>
+              {pgTestResult && (
+                <span className={`flex items-center gap-1 text-sm ${pgTestResult.status === 'success' ? 'text-green-600' : 'text-red-600'}`}>
+                  {pgTestResult.status === 'success' ? <CheckCircle className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
+                  {pgTestResult.status === 'success' ? 'PG 連線成功！' : `失敗：${pgTestResult.error}`}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex gap-3 pt-2 border-t">
             <button
               type="button"
-              onClick={() => { setShowForm(false); setSelectedConnId(null); setTestResult(null) }}
+              onClick={() => { setShowForm(false); setSelectedConnId(null); setTestResult(null); setPgTestResult(null) }}
               className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
             >
               取消
@@ -278,7 +369,7 @@ export default function ConnectionPage() {
               className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50 transition-colors"
             >
               {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-              測試連線
+              測試 Maximo 連線
             </button>
             <button
               type="submit"

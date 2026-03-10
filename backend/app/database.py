@@ -33,6 +33,14 @@ async def init_db():
         "ALTER TABLE connections ADD COLUMN auth_type TEXT DEFAULT 'apikey'",
         "ALTER TABLE connections ADD COLUMN username TEXT",
         "ALTER TABLE connections ADD COLUMN password TEXT",
+        # Add original_host for SSH tunnel scenarios
+        "ALTER TABLE connections ADD COLUMN original_host TEXT DEFAULT ''",
+        # Add PostgreSQL push settings to connections
+        "ALTER TABLE connections ADD COLUMN pg_host TEXT DEFAULT ''",
+        "ALTER TABLE connections ADD COLUMN pg_port INTEGER DEFAULT 5432",
+        "ALTER TABLE connections ADD COLUMN pg_database TEXT DEFAULT ''",
+        "ALTER TABLE connections ADD COLUMN pg_username TEXT DEFAULT ''",
+        "ALTER TABLE connections ADD COLUMN pg_password TEXT DEFAULT ''",
     ]
     
     async with engine.begin() as conn:

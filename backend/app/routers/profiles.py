@@ -24,11 +24,6 @@ class ProfileCreate(BaseModel):
     connection_id: Optional[int] = None
 
 class TransferConfigCreate(BaseModel):
-    host: str = "postgres.nickai.cc"
-    port: int = 5432
-    database: str = "finrecorder"
-    username: str = "finrecorder"
-    password: str = "finrecorder123"
     write_mode: str = "APPEND"
     upsert_key: str = ""
     enabled: bool = False
@@ -58,7 +53,7 @@ async def list_profiles(
 ):
     """列出設定檔，可依租戶或連線篩選"""
     query = select(ExtractProfile).order_by(ExtractProfile.created_at.desc())
-    
+
     if connection_id is not None:
         query = query.where(ExtractProfile.connection_id == connection_id)
     elif tenant_id is not None:
@@ -71,9 +66,28 @@ async def list_profiles(
             query = query.where(ExtractProfile.connection_id.in_(conn_ids))
         else:
             return []  # 沒有該租戶的連線
-    
+
     result = await db.execute(query)
-    return [profile_to_dict(p) for p in result.scalars().all()]
+    profiles = result.scalars().all()
+
+    # 批次查詢所有 profile 的 transfer config enabled 狀態
+    profile_ids = [p.id for p in profiles]
+    transfer_enabled_ids = set()
+    if profile_ids:
+        tc_result = await db.execute(
+            select(TransferConfig.profile_id).where(
+                TransferConfig.profile_id.in_(profile_ids),
+                TransferConfig.enabled == True
+            )
+        )
+        transfer_enabled_ids = set(tc_result.scalars().all())
+
+    results = []
+    for p in profiles:
+        d = profile_to_dict(p)
+        d["transfer_enabled"] = p.id in transfer_enabled_ids
+        results.append(d)
+    return results
 
 @router.get("/{profile_id}")
 async def get_profile(profile_id: int, db: AsyncSession = Depends(get_db)):
@@ -117,6 +131,7 @@ async def update_profile(profile_id: int, data: ProfileCreate, db: AsyncSession 
     p.schedule_cron = data.schedule_cron
     p.connection_id = data.connection_id
     await db.commit()
+    await db.refresh(p)
     return profile_to_dict(p)
 
 @router.delete("/{profile_id}")
@@ -139,10 +154,6 @@ async def get_transfer_config(profile_id: int, db: AsyncSession = Depends(get_db
     return {
         "id": tc.id,
         "profile_id": tc.profile_id,
-        "host": tc.host,
-        "port": tc.port,
-        "database": tc.database,
-        "username": tc.username,
         "write_mode": tc.write_mode,
         "upsert_key": tc.upsert_key or "",
         "enabled": tc.enabled,
@@ -153,22 +164,12 @@ async def save_transfer_config(profile_id: int, data: TransferConfigCreate, db: 
     result = await db.execute(select(TransferConfig).where(TransferConfig.profile_id == profile_id))
     tc = result.scalar_one_or_none()
     if tc:
-        tc.host = data.host
-        tc.port = data.port
-        tc.database = data.database
-        tc.username = data.username
-        tc.password = data.password
         tc.write_mode = data.write_mode
         tc.upsert_key = data.upsert_key
         tc.enabled = data.enabled
     else:
         tc = TransferConfig(
             profile_id=profile_id,
-            host=data.host,
-            port=data.port,
-            database=data.database,
-            username=data.username,
-            password=data.password,
             write_mode=data.write_mode,
             upsert_key=data.upsert_key,
             enabled=data.enabled,
@@ -176,14 +177,3 @@ async def save_transfer_config(profile_id: int, data: TransferConfigCreate, db: 
         db.add(tc)
     await db.commit()
     return {"saved": True}
-
-@router.post("/{profile_id}/transfer/test")
-async def test_transfer_config(profile_id: int, data: TransferConfigCreate):
-    transfer = PostgreSQLTransfer(
-        host=data.host,
-        port=data.port,
-        database=data.database,
-        username=data.username,
-        password=data.password,
-    )
-    return transfer.test_connection()

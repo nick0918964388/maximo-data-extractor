@@ -108,11 +108,17 @@ const tabs = [
 ]
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('connection')
-  const [tenantId, setTenantId] = useState(null)
+  const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'connection')
+  const [tenantId, setTenantId] = useState(() => {
+    const saved = localStorage.getItem('tenantId')
+    return saved ? parseInt(saved) : null
+  })
+
+  const handleSetActiveTab = (tab) => { setActiveTab(tab); localStorage.setItem('activeTab', tab) }
+  const handleSetTenantId = (id) => { setTenantId(id); id ? localStorage.setItem('tenantId', id) : localStorage.removeItem('tenantId') }
 
   return (
-    <TenantContext.Provider value={{ tenantId, setTenantId }}>
+    <TenantContext.Provider value={{ tenantId, setTenantId: handleSetTenantId }}>
       <div className="min-h-screen flex flex-col">
         {/* Header */}
         <header className="bg-blue-700 text-white shadow-lg">
@@ -133,7 +139,7 @@ export default function App() {
               return (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => handleSetActiveTab(tab.id)}
                   className={`flex items-center gap-2 px-5 py-3 text-sm font-medium border-b-2 transition-colors ${
                     activeTab === tab.id
                       ? 'border-blue-600 text-blue-600'

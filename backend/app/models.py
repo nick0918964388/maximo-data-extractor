@@ -18,15 +18,22 @@ class Connection(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), default="Default")
     base_url = Column(String(500), nullable=False)
+    original_host = Column(String(200), default="")  # 實際主機位址（SSH tunnel 時使用）
     auth_type = Column(String(20), default="apikey")  # apikey or maxauth
     api_key = Column(String(200), nullable=True)
     username = Column(String(100), nullable=True)
     password = Column(String(200), nullable=True)
     is_active = Column(Boolean, default=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True)
+    # PostgreSQL push settings (shared across all profiles in this connection)
+    pg_host = Column(String(200), default="")
+    pg_port = Column(Integer, default=5432)
+    pg_database = Column(String(200), default="")
+    pg_username = Column(String(100), default="")
+    pg_password = Column(String(200), default="")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    
+
     # Relationships
     tenant = relationship("Tenant", back_populates="connections")
     profiles = relationship("ExtractProfile", back_populates="connection", cascade="all, delete-orphan")
@@ -63,6 +70,16 @@ class TransferConfig(Base):
     upsert_key = Column(String(100), default="")         # column name for UPSERT conflict
     enabled = Column(Boolean, default=False)
     created_at = Column(DateTime, server_default=func.now())
+
+class FieldMetadata(Base):
+    __tablename__ = "field_metadata"
+    id = Column(Integer, primary_key=True, index=True)
+    connection_id = Column(Integer, ForeignKey("connections.id"), nullable=False)
+    object_structure = Column(String(100), nullable=False)
+    field_name = Column(String(200), nullable=False)
+    field_type = Column(String(50), default="str")
+    title = Column(String(500), default="")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 class ExecutionHistory(Base):
     __tablename__ = "execution_history"

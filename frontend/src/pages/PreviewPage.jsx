@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Loader2, FileText, Database, ChevronLeft, ChevronRight, RefreshCw, Table2 } from 'lucide-react'
 import { listHistory, previewCsv, listDbTables, previewDbTable } from '../api/index.js'
+import { useTenant } from '../App.jsx'
 
 function Pagination({ page, totalPages, onPageChange }) {
   return (
@@ -27,7 +28,7 @@ function Pagination({ page, totalPages, onPageChange }) {
   )
 }
 
-function DataTable({ headers, rows, isLoading }) {
+function DataTable({ headers, rows, isLoading, fieldTitles }) {
   if (isLoading) {
     return (
       <div className="flex justify-center py-12">
@@ -46,14 +47,17 @@ function DataTable({ headers, rows, isLoading }) {
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+    <div>
+      <table className="min-w-max text-sm">
         <thead className="bg-gray-50 border-b sticky top-0">
           <tr>
             <th className="text-left px-3 py-2 font-medium text-gray-500 text-xs">#</th>
             {headers.map((h, i) => (
               <th key={i} className="text-left px-3 py-2 font-medium text-gray-600 text-xs whitespace-nowrap">
-                {h}
+                <div>{h}</div>
+                {fieldTitles && fieldTitles[h] && (
+                  <div className="text-gray-400 font-normal">{fieldTitles[h]}</div>
+                )}
               </th>
             ))}
           </tr>
@@ -76,12 +80,13 @@ function DataTable({ headers, rows, isLoading }) {
 }
 
 function CsvPreview() {
+  const { tenantId } = useTenant()
   const [selectedHistory, setSelectedHistory] = useState(null)
   const [page, setPage] = useState(1)
 
   const { data: history = [], isLoading: historyLoading } = useQuery({
-    queryKey: ['history-for-preview'],
-    queryFn: () => listHistory(50),
+    queryKey: ['history-for-preview', tenantId],
+    queryFn: () => listHistory(50, tenantId),
   })
 
   const successHistory = history.filter(h => h.status === 'success' && h.file_path)
@@ -134,7 +139,7 @@ function CsvPreview() {
       </div>
 
       {selectedHistory && (
-        <div className="bg-white rounded-xl shadow overflow-hidden max-h-[500px] overflow-y-auto">
+        <div className="bg-white rounded-xl shadow max-h-[500px] overflow-auto">
           <DataTable
             headers={csvData?.headers || []}
             rows={csvData?.rows || []}
@@ -154,12 +159,13 @@ function CsvPreview() {
 }
 
 function DbPreview() {
+  const { tenantId } = useTenant()
   const [selectedTable, setSelectedTable] = useState(null)
   const [page, setPage] = useState(1)
 
   const { data: tablesData, isLoading: tablesLoading, error: tablesError } = useQuery({
-    queryKey: ['db-tables'],
-    queryFn: listDbTables,
+    queryKey: ['db-tables', tenantId],
+    queryFn: () => listDbTables(tenantId),
   })
 
   const { data: tableData, isLoading: tableLoading, refetch } = useQuery({
@@ -213,11 +219,12 @@ function DbPreview() {
       )}
 
       {selectedTable && (
-        <div className="bg-white rounded-xl shadow overflow-hidden max-h-[500px] overflow-y-auto">
+        <div className="bg-white rounded-xl shadow max-h-[500px] overflow-auto">
           <DataTable
             headers={tableData?.headers || []}
             rows={tableData?.rows || []}
             isLoading={tableLoading}
+            fieldTitles={tableData?.field_titles}
           />
         </div>
       )}
