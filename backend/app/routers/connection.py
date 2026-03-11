@@ -283,3 +283,68 @@ async def get_fields(
         await db.commit()
 
     return fields
+
+@router.get("/fields/{object_structure}/{child_name}")
+async def get_child_fields(
+    object_structure: str,
+    child_name: str,
+    tenant_id: Optional[int] = Query(None),
+    connection_id: Optional[int] = Query(None),
+    refresh: bool = Query(False),
+    lang: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """取得子表（關聯物件）的欄位清單"""
+    if connection_id is not None:
+        query = select(Connection).where(Connection.id == connection_id)
+    else:
+        query = select(Connection).where(Connection.is_active == True)
+        if tenant_id is not None:
+            query = query.where(Connection.tenant_id == tenant_id)
+    query = query.limit(1)
+
+    result = await db.execute(query)
+    conn = result.scalar_one_or_none()
+    if not conn:
+        raise HTTPException(400, "No active connection configured")
+
+    cache_key = f"{object_structure.upper()}.{child_name}"
+
+    # Try cached first
+    if not refresh:
+        cached = await db.execute(
+            select(FieldMetadata).where(
+                FieldMetadata.connection_id == conn.id,
+                FieldMetadata.object_structure == cache_key
+            ).order_by(FieldMetadata.field_name)
+        )
+        cached_fields = cached.scalars().all()
+        if cached_fields:
+            return [{"name": f.field_name, "type": f.field_type, "title": f.title or ""} for f in cached_fields]
+
+    # Fetch from Maximo
+    client = create_maximo_client(conn)
+    try:
+        fields = await client.get_child_fields(object_structure, child_name, lang=lang)
+    except Exception as e:
+        raise HTTPException(400, f"Failed to fetch child fields: {str(e)}")
+
+    # Save to cache
+    if fields:
+        await db.execute(
+            FieldMetadata.__table__.delete().where(
+                FieldMetadata.connection_id == conn.id,
+                FieldMetadata.object_structure == cache_key
+            )
+        )
+        for f in fields:
+            db.add(FieldMetadata(
+                connection_id=conn.id,
+                object_structure=cache_key,
+                field_name=f["name"],
+                field_type=f.get("type", "str"),
+                title=f.get("title", ""),
+            ))
+        await db.commit()
+
+    return fields

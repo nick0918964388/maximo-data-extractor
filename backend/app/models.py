@@ -44,6 +44,7 @@ class ExtractProfile(Base):
     name = Column(String(200), nullable=False)
     object_structure = Column(String(100), nullable=False)
     fields = Column(Text)           # JSON array of field names
+    child_fields = Column(Text)     # JSON dict: {"child_name": ["field1", "field2"]}
     where_clause = Column(Text)     # oslc.where condition
     order_by = Column(String(200))  # oslc.orderBy
     page_size = Column(Integer, default=500)

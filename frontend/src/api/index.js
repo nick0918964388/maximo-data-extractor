@@ -23,6 +23,8 @@ export const getObjectStructures = (tenant_id) =>
   api.get('/connection/object-structures', { params: { tenant_id } }).then(r => r.data)
 export const getFields = (os, tenant_id, refresh = false, lang = null) =>
   api.get(`/connection/fields/${os}`, { params: { tenant_id, refresh, lang } }).then(r => r.data)
+export const getChildFields = (os, childName, tenant_id, refresh = false, lang = null, connection_id = null) =>
+  api.get(`/connection/fields/${os}/${childName}`, { params: { tenant_id, refresh, lang, connection_id } }).then(r => r.data)
 
 // Profiles
 export const listProfiles = (params) => 
@@ -47,8 +49,8 @@ export const clearHistory = () => api.delete('/history').then(r => r.data)
 export const downloadFile = (history_id) => `/api/extract/download/${history_id}`
 
 // Preview
-export const previewCsv = (history_id, page = 1, page_size = 100) =>
-  api.get(`/preview/csv/${history_id}`, { params: { page, page_size } }).then(r => r.data)
+export const previewCsv = (history_id, page = 1, page_size = 100, sort_by = null, sort_order = 'asc') =>
+  api.get(`/preview/csv/${history_id}`, { params: { page, page_size, sort_by, sort_order } }).then(r => r.data)
 export const listDbTables = (tenant_id) => api.get('/preview/db/tables', { params: { tenant_id } }).then(r => r.data)
-export const previewDbTable = (table_name, page = 1, page_size = 100) =>
-  api.get(`/preview/db/${table_name}`, { params: { page, page_size } }).then(r => r.data)
+export const previewDbTable = (table_name, page = 1, page_size = 100, sort_by = null, sort_order = 'asc') =>
+  api.get(`/preview/db/${table_name}`, { params: { page, page_size, sort_by, sort_order } }).then(r => r.data)

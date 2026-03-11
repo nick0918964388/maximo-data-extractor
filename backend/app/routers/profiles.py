@@ -8,14 +8,27 @@ import json
 from app.database import get_db
 from app.models import ExtractProfile, TransferConfig, Connection
 from app.services.scheduler import add_profile_job, remove_profile_job
-from app.services.transfer import PostgreSQLTransfer
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
+
+
+def _sync_schedule(profile):
+    """Register or remove scheduler job based on profile's cron setting."""
+    from app.routers.extract import do_extract
+    if profile.schedule_cron:
+        try:
+            add_profile_job(profile.id, profile.schedule_cron,
+                            lambda pid=profile.id: do_extract(pid))
+        except Exception:
+            pass
+    else:
+        remove_profile_job(profile.id)
 
 class ProfileCreate(BaseModel):
     name: str
     object_structure: str
     fields: Optional[list[str]] = None
+    child_fields: Optional[dict] = None
     where_clause: Optional[str] = None
     order_by: Optional[str] = None
     page_size: int = 500
@@ -34,6 +47,7 @@ def profile_to_dict(p: ExtractProfile) -> dict:
         "name": p.name,
         "object_structure": p.object_structure,
         "fields": json.loads(p.fields) if p.fields else [],
+        "child_fields": json.loads(p.child_fields) if p.child_fields else {},
         "where_clause": p.where_clause,
         "order_by": p.order_by,
         "page_size": p.page_size,
@@ -103,6 +117,7 @@ async def create_profile(data: ProfileCreate, db: AsyncSession = Depends(get_db)
         name=data.name,
         object_structure=data.object_structure,
         fields=json.dumps(data.fields) if data.fields else None,
+        child_fields=json.dumps(data.child_fields) if data.child_fields else None,
         where_clause=data.where_clause,
         order_by=data.order_by,
         page_size=data.page_size,
@@ -113,6 +128,7 @@ async def create_profile(data: ProfileCreate, db: AsyncSession = Depends(get_db)
     db.add(p)
     await db.commit()
     await db.refresh(p)
+    _sync_schedule(p)
     return profile_to_dict(p)
 
 @router.put("/{profile_id}")
@@ -124,6 +140,7 @@ async def update_profile(profile_id: int, data: ProfileCreate, db: AsyncSession 
     p.name = data.name
     p.object_structure = data.object_structure
     p.fields = json.dumps(data.fields) if data.fields else None
+    p.child_fields = json.dumps(data.child_fields) if data.child_fields else None
     p.where_clause = data.where_clause
     p.order_by = data.order_by
     p.page_size = data.page_size
@@ -132,6 +149,7 @@ async def update_profile(profile_id: int, data: ProfileCreate, db: AsyncSession 
     p.connection_id = data.connection_id
     await db.commit()
     await db.refresh(p)
+    _sync_schedule(p)
     return profile_to_dict(p)
 
 @router.delete("/{profile_id}")

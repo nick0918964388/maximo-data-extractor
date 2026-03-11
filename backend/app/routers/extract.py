@@ -76,13 +76,25 @@ async def do_extract(profile_id: int):
         running_tasks[profile_id]["history_id"] = history.id
 
         fields = json.loads(profile.fields) if profile.fields else None
+        child_fields = json.loads(profile.child_fields) if profile.child_fields else None
         if fields:
             _log(profile_id, f"選取欄位: {len(fields)} 個")
         else:
             _log(profile_id, "選取欄位: 全部")
 
+        if child_fields:
+            _log(profile_id, f"子表欄位篩選: {len(child_fields)} 個子表")
+            for cf_name, cf_fields in child_fields.items():
+                _log(profile_id, f"  {cf_name}: {len(cf_fields)} 個欄位")
+
         if profile.where_clause:
-            _log(profile_id, f"篩選條件: {profile.where_clause}")
+            from app.services.maximo import resolve_date_variables
+            resolved_where = resolve_date_variables(profile.where_clause)
+            if resolved_where != profile.where_clause:
+                _log(profile_id, f"篩選條件: {profile.where_clause}")
+                _log(profile_id, f"  → 解析後: {resolved_where}")
+            else:
+                _log(profile_id, f"篩選條件: {profile.where_clause}")
 
         client = MaximoClient(
             base_url=conn.base_url,
@@ -111,6 +123,7 @@ async def do_extract(profile_id: int):
             records = await client.extract(
                 object_structure=profile.object_structure,
                 fields=fields,
+                child_fields=child_fields,
                 where_clause=profile.where_clause,
                 order_by=profile.order_by,
                 page_size=profile.page_size,
@@ -200,7 +213,7 @@ async def do_extract(profile_id: int):
                     upsert_key=tc.upsert_key or "",
                 )
                 result_t = await asyncio.get_event_loop().run_in_executor(
-                    None, transfer.transfer, records, profile.object_structure, tenant_name
+                    None, transfer.transfer, records, profile.object_structure, tenant_name, child_fields
                 )
                 history.transfer_status = result_t["status"]
                 if result_t["status"] == "success":

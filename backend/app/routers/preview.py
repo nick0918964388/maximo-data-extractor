@@ -25,33 +25,41 @@ async def preview_csv(
     history_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
+    sort_by: Optional[str] = Query(None),
+    sort_order: Optional[str] = Query("asc", regex="^(asc|desc)$"),
     db: AsyncSession = Depends(get_db)
 ):
     """預覽 CSV 檔案內容"""
     result = await db.execute(select(ExecutionHistory).where(ExecutionHistory.id == history_id))
     history = result.scalar_one_or_none()
-    
+
     if not history:
         raise HTTPException(404, "History record not found")
-    
+
     if not history.file_path or not os.path.exists(history.file_path):
         raise HTTPException(404, "CSV file not found")
-    
+
     try:
-        rows = []
+        all_rows = []
         headers = []
-        total_rows = 0
-        skip = (page - 1) * page_size
-        
+
         with open(history.file_path, 'r', encoding='utf-8') as f:
             reader = csv.reader(f)
             headers = next(reader, [])
-            
-            for i, row in enumerate(reader):
-                total_rows += 1
-                if i >= skip and len(rows) < page_size:
-                    rows.append(row)
-        
+            all_rows = list(reader)
+
+        total_rows = len(all_rows)
+
+        # 排序
+        if sort_by and sort_by in headers:
+            sort_idx = headers.index(sort_by)
+            reverse = sort_order == "desc"
+            all_rows.sort(key=lambda r: r[sort_idx] if sort_idx < len(r) else "", reverse=reverse)
+
+        # 分頁
+        skip = (page - 1) * page_size
+        rows = all_rows[skip:skip + page_size]
+
         return {
             "headers": headers,
             "rows": rows,
@@ -104,6 +112,8 @@ async def preview_db_table(
     table_name: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
+    sort_by: Optional[str] = Query(None),
+    sort_order: Optional[str] = Query("asc", regex="^(asc|desc)$"),
     db: AsyncSession = Depends(get_db),
 ):
     """預覽資料庫表內容"""
@@ -148,10 +158,14 @@ async def preview_db_table(
                     if fm.title:
                         field_titles[fm.field_name] = fm.title
 
-            # 分頁查詢
+            # 分頁查詢（含排序）
             offset = (page - 1) * page_size
+            order_clause = ""
+            if sort_by and sort_by in headers:
+                direction = "DESC" if sort_order == "desc" else "ASC"
+                order_clause = f'ORDER BY "{sort_by}" {direction}'
             rows_result = await conn.fetch(
-                f'SELECT * FROM "{table_name}" LIMIT $1 OFFSET $2',
+                f'SELECT * FROM "{table_name}" {order_clause} LIMIT $1 OFFSET $2',
                 page_size, offset
             )
 

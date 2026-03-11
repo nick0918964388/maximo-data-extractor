@@ -2,7 +2,56 @@ import httpx
 import json
 import base64
 import re
+from datetime import datetime, timedelta
 from typing import Optional
+
+
+def resolve_date_variables(text: str) -> str:
+    """Replace date variables like ${TODAY}, ${YESTERDAY} in where clause."""
+    if not text or "${" not in text:
+        return text
+
+    now = datetime.now()
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    variables = {
+        "${NOW}": now.strftime("%Y-%m-%dT%H:%M:%S"),
+        "${TODAY}": today.strftime("%Y-%m-%dT%H:%M:%S"),
+        "${YESTERDAY}": (today - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S"),
+        "${TOMORROW}": (today + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S"),
+        "${THIS_MONTH}": today.replace(day=1).strftime("%Y-%m-%dT%H:%M:%S"),
+        "${LAST_MONTH}": (today.replace(day=1) - timedelta(days=1)).replace(day=1).strftime("%Y-%m-%dT%H:%M:%S"),
+        "${THIS_YEAR}": today.replace(month=1, day=1).strftime("%Y-%m-%dT%H:%M:%S"),
+        "${DAYS_AGO_7}": (today - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S"),
+        "${DAYS_AGO_30}": (today - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+    result = text
+    for var, value in variables.items():
+        result = result.replace(var, value)
+    return result
+
+def _build_oslc_select(fields: list[str], child_fields: dict = None) -> str:
+    """Build oslc.select string with nested child field syntax.
+
+    Example: fields=["wonum","doclinks"], child_fields={"doclinks":["urlname","document"]}
+    Result: "wonum,doclinks{urlname,document}"
+    """
+    if not fields:
+        return ""
+    child_fields = child_fields or {}
+    parts = []
+    for f in fields:
+        if f in child_fields and child_fields[f]:
+            parts.append(f"{f}{{{','.join(child_fields[f])}}}")
+        else:
+            parts.append(f)
+    # Add child selections not in main fields list
+    for child_name, sub_fields in child_fields.items():
+        if child_name not in fields and sub_fields:
+            parts.append(f"{child_name}{{{','.join(sub_fields)}}}")
+    return ",".join(parts)
+
 
 class MaximoClient:
     def __init__(self, base_url: str, api_key: str = None, auth_type: str = "apikey",
@@ -164,10 +213,62 @@ class MaximoClient:
 
             return []
 
+    async def get_child_fields(self, object_structure: str, child_name: str, lang: str = None) -> list[dict]:
+        """Get sub-fields for a nested/child object from JSON Schema, with fallback to real data."""
+        os_lower = object_structure.lower()
+        headers = dict(self.headers)
+        if lang:
+            headers["Accept-Language"] = lang
+
+        async with httpx.AsyncClient(verify=False, timeout=30) as client:
+            # Method 1: JSON Schema endpoint
+            schema_url = f"{self.base_url}/oslc/jsonschemas/{os_lower}"
+            params = {"_lid": lang} if lang else {}
+            try:
+                resp = await client.get(schema_url, headers=headers, params=params)
+                if resp.status_code == 200:
+                    schema = resp.json()
+                    prop = schema.get("properties", {}).get(child_name, {})
+                    items = prop.get("items", {})
+                    if items:
+                        fields = self._parse_fields_from_schema(items)
+                        if fields:
+                            return fields
+
+                    # items may use $ref to a sub-schema instead of inline properties
+                    # Try the sub-schema endpoint directly
+                    sub_schema_url = f"{self.base_url}/oslc/jsonschemas/{os_lower}/{child_name}"
+                    resp2 = await client.get(sub_schema_url, headers=headers, params=params)
+                    if resp2.status_code == 200:
+                        sub_schema = resp2.json()
+                        fields = self._parse_fields_from_schema(sub_schema)
+                        if fields:
+                            return fields
+            except Exception:
+                pass
+
+            # Method 2: Fallback - fetch 1 record with oslc.select to get child data
+            try:
+                list_url = f"{self.base_url}/oslc/os/{object_structure}"
+                list_params = {"lean": 1, "oslc.pageSize": 1, "oslc.select": f"{child_name}"}
+                resp = await client.get(list_url, headers=headers, params=list_params)
+                resp.raise_for_status()
+                data = resp.json()
+                members = data.get("member", [])
+
+                for member in members:
+                    child_data = member.get(child_name, [])
+                    if isinstance(child_data, list) and child_data:
+                        return self._parse_fields_from_dict(child_data[0])
+                return []
+            except Exception as e:
+                raise Exception(f"Cannot connect to Maximo: {repr(e)}")
+
     async def extract(
         self,
         object_structure: str,
         fields: Optional[list[str]] = None,
+        child_fields: Optional[dict] = None,
         where_clause: Optional[str] = None,
         order_by: Optional[str] = None,
         page_size: int = 500,
@@ -177,9 +278,17 @@ class MaximoClient:
         url = f"{self.base_url}/oslc/os/{object_structure}"
         params: dict = {"lean": 1, "oslc.pageSize": page_size}
         if fields:
-            params["oslc.select"] = ",".join(fields)
+            params["oslc.select"] = _build_oslc_select(fields, child_fields)
+        elif child_fields:
+            # No main field filter but has child field filter - build select for children only
+            child_parts = []
+            for child_name, sub_fields in child_fields.items():
+                if sub_fields:
+                    child_parts.append(f"{child_name}{{{','.join(sub_fields)}}}")
+            if child_parts:
+                params["oslc.select"] = "*," + ",".join(child_parts)
         if where_clause:
-            params["oslc.where"] = where_clause
+            params["oslc.where"] = resolve_date_variables(where_clause)
         if order_by:
             params["oslc.orderBy"] = order_by
 

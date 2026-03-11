@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Loader2, FileText, Database, ChevronLeft, ChevronRight, RefreshCw, Table2 } from 'lucide-react'
+import { Loader2, FileText, Database, ChevronLeft, ChevronRight, RefreshCw, Table2, Copy, Check, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { listHistory, previewCsv, listDbTables, previewDbTable } from '../api/index.js'
 import { useTenant } from '../App.jsx'
 
@@ -28,7 +28,14 @@ function Pagination({ page, totalPages, onPageChange }) {
   )
 }
 
-function DataTable({ headers, rows, isLoading, fieldTitles }) {
+function SortIcon({ field, sortBy, sortOrder }) {
+  if (sortBy !== field) return <ArrowUpDown className="w-3 h-3 text-gray-300" />
+  return sortOrder === 'asc'
+    ? <ArrowUp className="w-3 h-3 text-blue-600" />
+    : <ArrowDown className="w-3 h-3 text-blue-600" />
+}
+
+function DataTable({ headers, rows, isLoading, fieldTitles, sortBy, sortOrder, onSort }) {
   if (isLoading) {
     return (
       <div className="flex justify-center py-12">
@@ -46,6 +53,15 @@ function DataTable({ headers, rows, isLoading, fieldTitles }) {
     )
   }
 
+  const handleSort = (field) => {
+    if (!onSort) return
+    if (sortBy === field) {
+      onSort(field, sortOrder === 'asc' ? 'desc' : 'asc')
+    } else {
+      onSort(field, 'asc')
+    }
+  }
+
   return (
     <div>
       <table className="min-w-max text-sm">
@@ -53,8 +69,15 @@ function DataTable({ headers, rows, isLoading, fieldTitles }) {
           <tr>
             <th className="text-left px-3 py-2 font-medium text-gray-500 text-xs">#</th>
             {headers.map((h, i) => (
-              <th key={i} className="text-left px-3 py-2 font-medium text-gray-600 text-xs whitespace-nowrap">
-                <div>{h}</div>
+              <th
+                key={i}
+                className={`text-left px-3 py-2 font-medium text-gray-600 text-xs whitespace-nowrap ${onSort ? 'cursor-pointer select-none hover:bg-gray-100' : ''}`}
+                onClick={() => handleSort(h)}
+              >
+                <div className="flex items-center gap-1">
+                  <span>{h}</span>
+                  {onSort && <SortIcon field={h} sortBy={sortBy} sortOrder={sortOrder} />}
+                </div>
                 {fieldTitles && fieldTitles[h] && (
                   <div className="text-gray-400 font-normal">{fieldTitles[h]}</div>
                 )}
@@ -83,6 +106,8 @@ function CsvPreview() {
   const { tenantId } = useTenant()
   const [selectedHistory, setSelectedHistory] = useState(null)
   const [page, setPage] = useState(1)
+  const [sortBy, setSortBy] = useState(null)
+  const [sortOrder, setSortOrder] = useState('asc')
 
   const { data: history = [], isLoading: historyLoading } = useQuery({
     queryKey: ['history-for-preview', tenantId],
@@ -92,14 +117,22 @@ function CsvPreview() {
   const successHistory = history.filter(h => h.status === 'success' && h.file_path)
 
   const { data: csvData, isLoading: csvLoading, refetch } = useQuery({
-    queryKey: ['csv-preview', selectedHistory, page],
-    queryFn: () => previewCsv(selectedHistory, page, 100),
+    queryKey: ['csv-preview', selectedHistory, page, sortBy, sortOrder],
+    queryFn: () => previewCsv(selectedHistory, page, 100, sortBy, sortOrder),
     enabled: !!selectedHistory,
   })
 
   const handleHistoryChange = (e) => {
     const id = e.target.value ? parseInt(e.target.value) : null
     setSelectedHistory(id)
+    setPage(1)
+    setSortBy(null)
+    setSortOrder('asc')
+  }
+
+  const handleSort = (field, order) => {
+    setSortBy(field)
+    setSortOrder(order)
     setPage(1)
   }
 
@@ -144,6 +177,9 @@ function CsvPreview() {
             headers={csvData?.headers || []}
             rows={csvData?.rows || []}
             isLoading={csvLoading}
+            sortBy={sortBy}
+            sortOrder={sortOrder}
+            onSort={handleSort}
           />
         </div>
       )}
@@ -158,10 +194,43 @@ function CsvPreview() {
   )
 }
 
+function CopyButton({ text }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = () => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text)
+      } else {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+      }
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch { /* ignore */ }
+  }
+  return (
+    <button
+      onClick={handleCopy}
+      title="複製表名稱"
+      className={`p-1.5 rounded transition-colors ${copied ? 'text-green-600 bg-green-50' : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50'}`}
+    >
+      {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+    </button>
+  )
+}
+
 function DbPreview() {
   const { tenantId } = useTenant()
   const [selectedTable, setSelectedTable] = useState(null)
   const [page, setPage] = useState(1)
+  const [sortBy, setSortBy] = useState(null)
+  const [sortOrder, setSortOrder] = useState('asc')
 
   const { data: tablesData, isLoading: tablesLoading, error: tablesError } = useQuery({
     queryKey: ['db-tables', tenantId],
@@ -169,13 +238,21 @@ function DbPreview() {
   })
 
   const { data: tableData, isLoading: tableLoading, refetch } = useQuery({
-    queryKey: ['db-table-preview', selectedTable, page],
-    queryFn: () => previewDbTable(selectedTable, page, 100),
+    queryKey: ['db-table-preview', selectedTable, page, sortBy, sortOrder],
+    queryFn: () => previewDbTable(selectedTable, page, 100, sortBy, sortOrder),
     enabled: !!selectedTable,
   })
 
   const handleTableChange = (e) => {
     setSelectedTable(e.target.value || null)
+    setPage(1)
+    setSortBy(null)
+    setSortOrder('asc')
+  }
+
+  const handleSort = (field, order) => {
+    setSortBy(field)
+    setSortOrder(order)
     setPage(1)
   }
 
@@ -195,6 +272,7 @@ function DbPreview() {
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
+          {selectedTable && <CopyButton text={selectedTable} />}
         </div>
         {tableData && (
           <>
@@ -225,6 +303,9 @@ function DbPreview() {
             rows={tableData?.rows || []}
             isLoading={tableLoading}
             fieldTitles={tableData?.field_titles}
+            sortBy={sortBy}
+            sortOrder={sortOrder}
+            onSort={handleSort}
           />
         </div>
       )}

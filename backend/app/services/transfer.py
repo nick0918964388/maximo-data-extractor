@@ -106,7 +106,7 @@ class PostgreSQLTransfer:
         ]
         psycopg2.extras.execute_batch(cur, sql, values_list, page_size=500)
 
-    def transfer(self, records: List[Dict[str, Any]], object_structure: str, tenant_name: str = None) -> dict:
+    def transfer(self, records: List[Dict[str, Any]], object_structure: str, tenant_name: str = None, child_fields: dict = None) -> dict:
         prefix = tenant_name.lower().replace(" ", "_") if tenant_name else "maximo"
         main_table = f"{prefix}_{object_structure.lower()}"
 
@@ -117,6 +117,17 @@ class PostgreSQLTransfer:
 
         # Separate nested arrays from flat fields
         flat_records, children = self._separate_nested(records, parent_key)
+
+        # Filter child table columns based on child_fields config
+        if child_fields:
+            for child_name in list(children.keys()):
+                if child_name in child_fields and child_fields[child_name]:
+                    allowed = set(child_fields[child_name]) | {"_parent_key"}
+                    children[child_name] = [
+                        {k: v for k, v in row.items() if k in allowed}
+                        for row in children[child_name]
+                    ]
+
         flat_columns = self._get_all_columns(flat_records)
 
         try:

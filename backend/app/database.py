@@ -41,6 +41,8 @@ async def init_db():
         "ALTER TABLE connections ADD COLUMN pg_database TEXT DEFAULT ''",
         "ALTER TABLE connections ADD COLUMN pg_username TEXT DEFAULT ''",
         "ALTER TABLE connections ADD COLUMN pg_password TEXT DEFAULT ''",
+        # Add child_fields for nested object field selection
+        "ALTER TABLE extract_profiles ADD COLUMN child_fields TEXT",
     ]
     
     async with engine.begin() as conn:

@@ -4,7 +4,7 @@ import { useForm } from 'react-hook-form'
 import { Plus, Edit2, Trash2, Loader2, ChevronDown, ChevronUp, X, Save, CheckCircle, XCircle, CloudUpload, Search } from 'lucide-react'
 import {
   listProfiles, createProfile, updateProfile, deleteProfile,
-  getObjectStructures, getFields, getTransferConfig, saveTransferConfig,
+  getObjectStructures, getFields, getChildFields, getTransferConfig, saveTransferConfig,
   listConnections,
 } from '../api/index.js'
 import { useTenant } from '../App.jsx'
@@ -59,6 +59,12 @@ function ProfileForm({ profile, onClose, onSaved, tenantId }) {
   const [selectedFields, setSelectedFields] = useState(
     isEdit ? (profile.fields || []) : []
   )
+  const [selectedChildFields, setSelectedChildFields] = useState(
+    isEdit ? (profile.child_fields || {}) : {}
+  )
+  const [expandedChildren, setExpandedChildren] = useState({})
+  const [childFieldsData, setChildFieldsData] = useState({})
+  const [loadingChild, setLoadingChild] = useState({})
 
   const fetchFields = async (refresh = false) => {
     setFetchingFields(true)
@@ -69,6 +75,63 @@ function ProfileForm({ profile, onClose, onSaved, tenantId }) {
       alert('無法取得欄位：' + e.message)
     }
     setFetchingFields(false)
+  }
+
+  const [childFieldsError, setChildFieldsError] = useState({})
+
+  const fetchChildFields = async (childName) => {
+    setLoadingChild(prev => ({ ...prev, [childName]: true }))
+    setChildFieldsError(prev => ({ ...prev, [childName]: null }))
+    try {
+      const connId = getValues('connection_id')
+      const fields = await getChildFields(selectedOS, childName, tenantId, false, fieldLang, connId || null)
+      setChildFieldsData(prev => ({ ...prev, [childName]: fields }))
+    } catch (e) {
+      console.error('Failed to load child fields:', e)
+      const msg = e.response?.data?.detail || e.message || '未知錯誤'
+      setChildFieldsError(prev => ({ ...prev, [childName]: msg }))
+    }
+    setLoadingChild(prev => ({ ...prev, [childName]: false }))
+  }
+
+  const toggleExpandChild = (childName) => {
+    setExpandedChildren(prev => {
+      const next = { ...prev, [childName]: !prev[childName] }
+      // Load child fields on first expand
+      if (next[childName] && !childFieldsData[childName]) {
+        fetchChildFields(childName)
+      }
+      return next
+    })
+  }
+
+  const toggleChildField = (childName, fieldName) => {
+    setSelectedChildFields(prev => {
+      const current = prev[childName] || []
+      const next = current.includes(fieldName)
+        ? current.filter(f => f !== fieldName)
+        : [...current, fieldName]
+      if (next.length === 0) {
+        const { [childName]: _, ...rest } = prev
+        return rest
+      }
+      return { ...prev, [childName]: next }
+    })
+  }
+
+  const selectAllChildFields = (childName) => {
+    const fields = childFieldsData[childName] || []
+    setSelectedChildFields(prev => ({
+      ...prev,
+      [childName]: fields.map(f => f.name)
+    }))
+  }
+
+  const deselectAllChildFields = (childName) => {
+    setSelectedChildFields(prev => {
+      const { [childName]: _, ...rest } = prev
+      return rest
+    })
   }
 
   const toggleField = (fieldName) => {
@@ -84,6 +147,7 @@ function ProfileForm({ profile, onClose, onSaved, tenantId }) {
       const payload = {
         ...data,
         fields: selectedFields.length > 0 ? selectedFields : (data.fields ? data.fields.split(',').map(s => s.trim()).filter(Boolean) : []),
+        child_fields: Object.keys(selectedChildFields).length > 0 ? selectedChildFields : null,
         page_size: parseInt(data.page_size),
         connection_id: data.connection_id ? parseInt(data.connection_id) : null,
       }
@@ -170,7 +234,7 @@ function ProfileForm({ profile, onClose, onSaved, tenantId }) {
                             <button
                               key={os}
                               type="button"
-                              onClick={() => { setValue('object_structure', os, { shouldValidate: true }); setOsFilter(''); setOsOpen(false); setAvailableFields([]); setSelectedFields([]) }}
+                              onClick={() => { setValue('object_structure', os, { shouldValidate: true }); setOsFilter(''); setOsOpen(false); setAvailableFields([]); setSelectedFields([]); setSelectedChildFields({}); setExpandedChildren({}); setChildFieldsData({}) }}
                               className={`w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50 transition-colors ${
                                 selectedOS === os ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-700'
                               }`}
@@ -253,17 +317,62 @@ function ProfileForm({ profile, onClose, onSaved, tenantId }) {
                 </div>
                 {/* Field list */}
                 <div className="p-3 max-h-60 overflow-y-auto">
-                  <div className="grid grid-cols-2 gap-1">
+                  <div className="space-y-0.5">
                     {availableFields
                       .filter(f => !fieldFilter || f.name.toLowerCase().includes(fieldFilter.toLowerCase()) || (f.title && f.title.toLowerCase().includes(fieldFilter.toLowerCase())))
-                      .map(f => (
-                      <label key={f.name} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 px-1 py-0.5 rounded">
-                        <input type="checkbox" checked={selectedFields.includes(f.name)} onChange={() => toggleField(f.name)} />
-                        <span className="font-mono">{f.name}</span>
-                        {f.title && <span className="text-gray-500 text-xs truncate" title={f.title}>{f.title}</span>}
-                        <span className="text-gray-400 text-xs">({f.type})</span>
-                      </label>
-                    ))}
+                      .map(f => f.type === 'list' ? (
+                        <div key={f.name} className="border rounded bg-amber-50/50">
+                          <div className="flex items-center gap-2 px-2 py-1">
+                            <button type="button" onClick={() => toggleExpandChild(f.name)} className="text-gray-400 hover:text-gray-600">
+                              {expandedChildren[f.name] ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                            </button>
+                            <input type="checkbox" checked={selectedFields.includes(f.name)} onChange={() => toggleField(f.name)} />
+                            <span className="font-mono text-sm">{f.name}</span>
+                            <span className="bg-amber-200 text-amber-800 text-xs px-1.5 py-0.5 rounded">子表</span>
+                            {f.title && <span className="text-gray-500 text-xs truncate">{f.title}</span>}
+                            {selectedChildFields[f.name] && (
+                              <span className="text-xs text-blue-600 ml-auto">{selectedChildFields[f.name].length} 個子欄位</span>
+                            )}
+                          </div>
+                          {expandedChildren[f.name] && (
+                            <div className="border-t bg-white px-4 py-2">
+                              {loadingChild[f.name] ? (
+                                <div className="flex items-center gap-2 text-sm text-gray-400 py-2">
+                                  <Loader2 className="w-4 h-4 animate-spin" /> 載入子欄位中...
+                                </div>
+                              ) : childFieldsData[f.name] && childFieldsData[f.name].length > 0 ? (
+                                <div>
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <button type="button" onClick={() => selectAllChildFields(f.name)} className="text-xs text-blue-600 hover:underline">全選</button>
+                                    <button type="button" onClick={() => deselectAllChildFields(f.name)} className="text-xs text-red-500 hover:underline">取消全選</button>
+                                    <span className="text-xs text-gray-400">{(selectedChildFields[f.name] || []).length}/{childFieldsData[f.name].length}</span>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-1 max-h-40 overflow-y-auto">
+                                    {childFieldsData[f.name].map(cf => (
+                                      <label key={cf.name} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 px-1 py-0.5 rounded">
+                                        <input type="checkbox"
+                                          checked={(selectedChildFields[f.name] || []).includes(cf.name)}
+                                          onChange={() => toggleChildField(f.name, cf.name)} />
+                                        <span className="font-mono text-xs">{cf.name}</span>
+                                        {cf.title && <span className="text-gray-400 text-xs truncate" title={cf.title}>{cf.title}</span>}
+                                      </label>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className="text-xs text-red-500 py-1">{childFieldsError[f.name] || '無法取得子欄位或此欄位無子結構'}</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <label key={f.name} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 px-1 py-0.5 rounded">
+                          <input type="checkbox" checked={selectedFields.includes(f.name)} onChange={() => toggleField(f.name)} />
+                          <span className="font-mono">{f.name}</span>
+                          {f.title && <span className="text-gray-500 text-xs truncate" title={f.title}>{f.title}</span>}
+                          <span className="text-gray-400 text-xs">({f.type})</span>
+                        </label>
+                      ))}
                   </div>
                 </div>
               </div>
@@ -290,7 +399,10 @@ function ProfileForm({ profile, onClose, onSaved, tenantId }) {
             <label className="block text-sm font-medium mb-1">篩選條件 (oslc.where)</label>
             <input {...register('where_clause')}
               className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-              placeholder='例：status="APPR" and siteid="BEDFORD"' />
+              placeholder='例：status="APPR" and changedate>="${YESTERDAY}"' />
+            <p className="text-xs text-gray-400 mt-1">
+              支援日期變數：<code className="bg-gray-100 px-1 rounded">${'{TODAY}'}</code> <code className="bg-gray-100 px-1 rounded">${'{YESTERDAY}'}</code> <code className="bg-gray-100 px-1 rounded">${'{THIS_MONTH}'}</code> <code className="bg-gray-100 px-1 rounded">${'{LAST_MONTH}'}</code> <code className="bg-gray-100 px-1 rounded">${'{THIS_YEAR}'}</code> <code className="bg-gray-100 px-1 rounded">${'{DAYS_AGO_7}'}</code> <code className="bg-gray-100 px-1 rounded">${'{DAYS_AGO_30}'}</code>
+            </p>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -456,6 +568,15 @@ function ProfileCard({ profile: p, tenantId, onEdit, onDelete, onTransfer }) {
                   </table>
                 </div>
               )}
+            </div>
+          )}
+          {p.child_fields && Object.keys(p.child_fields).length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {Object.entries(p.child_fields).map(([name, fields]) => (
+                <span key={name} className="bg-amber-100 text-amber-700 text-xs px-2 py-0.5 rounded-full">
+                  {name} ({fields.length} 欄位)
+                </span>
+              ))}
             </div>
           )}
         </div>
