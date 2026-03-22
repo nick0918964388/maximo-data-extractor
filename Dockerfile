@@ -1,8 +1,8 @@
 # Build frontend
 FROM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm install
+COPY frontend/package.json ./
+RUN npm install --no-package-lock
 COPY frontend/ ./
 RUN npm run build
 
@@ -23,8 +23,6 @@ COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 # Create data directory
 RUN mkdir -p /app/data/exports
 
-# Expose port
-EXPOSE 8080
+EXPOSE 8000
 
-# Run the application
 CMD ["python", "run.py"]

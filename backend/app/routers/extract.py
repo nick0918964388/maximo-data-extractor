@@ -4,8 +4,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from typing import Optional
-import json, csv, os, time
-from datetime import datetime
+import json, csv, os, time, asyncio
+from datetime import datetime, timezone, timedelta
+
+_TZ_GMT8 = timezone(timedelta(hours=8))
+
+def _now():
+    return datetime.now(_TZ_GMT8).replace(tzinfo=None)
 from app.database import get_db, AsyncSessionLocal
 from app.models import ExtractProfile, Connection, ExecutionHistory, TransferConfig, Tenant
 from app.services.maximo import MaximoClient
@@ -17,16 +22,39 @@ router = APIRouter(prefix="/api/extract", tags=["extract"])
 # In-memory running tasks
 running_tasks: dict[int, dict] = {}
 
+
+def _log(profile_id: int, message: str):
+    """Append a timestamped log entry to a running task."""
+    if profile_id in running_tasks:
+        ts = _now().strftime("%H:%M:%S")
+        running_tasks[profile_id]["logs"].append(f"[{ts}] {message}")
+
+
 class ExtractRequest(BaseModel):
     profile_id: int
 
+
 async def do_extract(profile_id: int):
+    # 排程觸發時 running_tasks 尚未初始化，需先建立
+    if profile_id not in running_tasks:
+        running_tasks[profile_id] = {
+            "history_id": None,
+            "records": 0,
+            "status": "running",
+            "started_at": time.time(),
+            "logs": [],
+            "cancelled": False,
+        }
+
     async with AsyncSessionLocal() as db:
         # Load profile
         result = await db.execute(select(ExtractProfile).where(ExtractProfile.id == profile_id))
         profile = result.scalar_one_or_none()
         if not profile:
+            _log(profile_id, "找不到抽取設定")
             return
+
+        _log(profile_id, f"載入設定: {profile.name} ({profile.object_structure})")
 
         # Load connection
         conn_id = profile.connection_id
@@ -36,7 +64,11 @@ async def do_extract(profile_id: int):
             r2 = await db.execute(select(Connection).where(Connection.is_active == True).limit(1))
         conn = r2.scalar_one_or_none()
         if not conn:
+            _log(profile_id, "找不到連線設定")
+            running_tasks[profile_id]["status"] = "failed"
             return
+
+        _log(profile_id, f"使用連線: {conn.name} ({conn.base_url})")
 
         # Load tenant name for table naming
         tenant_name = None
@@ -46,50 +78,142 @@ async def do_extract(profile_id: int):
             if tenant:
                 tenant_name = tenant.name
 
+        # === Incremental sync: query last date from PostgreSQL ===
+        incremental_where = None
+        if profile.incremental_field:
+            r_tc = await db.execute(select(TransferConfig).where(
+                TransferConfig.profile_id == profile_id,
+                TransferConfig.enabled == True
+            ))
+            tc_check = r_tc.scalar_one_or_none()
+            if tc_check and conn.pg_host:
+                prefix = tenant_name.lower().replace(" ", "_") if tenant_name else "maximo"
+                table_name = f"{prefix}_{profile.object_structure.lower()}"
+                transfer_for_query = PostgreSQLTransfer(
+                    host=conn.pg_host,
+                    port=conn.pg_port or 5432,
+                    database=conn.pg_database,
+                    username=conn.pg_username,
+                    password=conn.pg_password,
+                )
+                last_date = await asyncio.get_event_loop().run_in_executor(
+                    None, transfer_for_query.get_last_date, table_name, profile.incremental_field
+                )
+                if last_date:
+                    incremental_where = f'{profile.incremental_field}>="{last_date}"'
+                    _log(profile_id, f"增量同步: {profile.incremental_field} 最後日期 = {last_date}")
+                    _log(profile_id, f"  → 自動追加條件: {incremental_where}")
+                else:
+                    _log(profile_id, f"增量同步: 資料庫中尚無 {profile.incremental_field} 資料，執行全量抽取")
+            else:
+                _log(profile_id, f"增量同步: 未啟用 PostgreSQL 推送，忽略增量設定")
+
         # Create history record
         history = ExecutionHistory(
             profile_id=profile_id,
             profile_name=profile.name,
             status="running",
-            started_at=datetime.now(),
+            started_at=_now(),
         )
         db.add(history)
         await db.commit()
         await db.refresh(history)
 
-        running_tasks[profile_id] = {
-            "history_id": history.id,
-            "records": 0,
-            "status": "running",
-            "started_at": time.time(),
-        }
+        running_tasks[profile_id]["history_id"] = history.id
 
         fields = json.loads(profile.fields) if profile.fields else None
+        child_fields = json.loads(profile.child_fields) if profile.child_fields else None
+        if fields:
+            _log(profile_id, f"選取欄位: {len(fields)} 個")
+        else:
+            _log(profile_id, "選取欄位: 全部")
+
+        if child_fields:
+            _log(profile_id, f"子表欄位篩選: {len(child_fields)} 個子表")
+            for cf_name, cf_fields in child_fields.items():
+                _log(profile_id, f"  {cf_name}: {len(cf_fields)} 個欄位")
+
+        if profile.where_clause:
+            from app.services.maximo import resolve_date_variables
+            resolved_where = resolve_date_variables(profile.where_clause)
+            if resolved_where != profile.where_clause:
+                _log(profile_id, f"篩選條件: {profile.where_clause}")
+                _log(profile_id, f"  → 解析後: {resolved_where}")
+            else:
+                _log(profile_id, f"篩選條件: {profile.where_clause}")
+
         client = MaximoClient(
             base_url=conn.base_url,
             api_key=conn.api_key,
             auth_type=conn.auth_type or "apikey",
             username=conn.username,
             password=conn.password,
+            original_host=conn.original_host,
         )
         start_time = time.time()
 
         try:
-            async def progress(count):
+            _log(profile_id, f"開始抽取 {profile.object_structure}，每頁 {profile.page_size} 筆...")
+
+            async def progress(count, page=None, message=None):
                 if profile_id in running_tasks:
                     running_tasks[profile_id]["records"] = count
+                    if message:
+                        _log(profile_id, message)
+                    elif page:
+                        _log(profile_id, f"第 {page} 頁完成，累計 {count} 筆")
+
+            def is_cancelled():
+                return running_tasks.get(profile_id, {}).get("cancelled", False)
+
+            # Combine where clause with incremental condition
+            effective_where = profile.where_clause
+            if incremental_where:
+                if effective_where:
+                    effective_where = f"({effective_where}) and {incremental_where}"
+                else:
+                    effective_where = incremental_where
+                _log(profile_id, f"最終篩選條件: {effective_where}")
 
             records = await client.extract(
                 object_structure=profile.object_structure,
                 fields=fields,
-                where_clause=profile.where_clause,
+                child_fields=child_fields,
+                where_clause=effective_where,
                 order_by=profile.order_by,
                 page_size=profile.page_size,
                 on_progress=progress,
+                is_cancelled=is_cancelled,
             )
 
+            # Normalize records: ensure all selected fields exist in every record
+            if fields and records:
+                for rec in records:
+                    for f in fields:
+                        if f not in rec:
+                            rec[f] = None
+
+            # Check if cancelled
+            if is_cancelled():
+                duration = time.time() - start_time
+                _log(profile_id, f"已中斷，共抽取 {len(records)} 筆 ({duration:.1f}s)")
+                history.status = "cancelled"
+                history.records_count = len(records)
+                history.duration_seconds = round(duration, 2)
+                history.completed_at = _now()
+                history.transfer_status = "none"
+                history.error_message = "使用者手動中斷"
+                running_tasks[profile_id]["status"] = "cancelled"
+                running_tasks[profile_id]["records"] = len(records)
+                await db.commit()
+                await asyncio.sleep(10)
+                running_tasks.pop(profile_id, None)
+                return
+
+            _log(profile_id, f"抽取完成，共 {len(records)} 筆")
+
             # Write to file
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = _now().strftime("%Y%m%d_%H%M%S")
             filename = f"{profile.object_structure}_{timestamp}"
             export_format = profile.export_format or "csv"
 
@@ -102,8 +226,10 @@ async def do_extract(profile_id: int):
                 filename += ".csv"
                 file_path = os.path.join(settings.exports_dir, filename)
                 if records:
+                    # Collect all unique field names across all records
+                    all_fields = dict.fromkeys(k for rec in records for k in rec.keys())
                     with open(file_path, "w", newline="", encoding="utf-8-sig") as f:
-                        writer = csv.DictWriter(f, fieldnames=records[0].keys())
+                        writer = csv.DictWriter(f, fieldnames=all_fields, extrasaction="ignore")
                         writer.writeheader()
                         writer.writerows(records)
                 else:
@@ -112,12 +238,14 @@ async def do_extract(profile_id: int):
             file_size = os.path.getsize(file_path) / 1024  # KB
             duration = time.time() - start_time
 
+            _log(profile_id, f"檔案已儲存: {filename} ({file_size:.1f} KB)")
+
             history.status = "success"
             history.records_count = len(records)
             history.file_path = file_path
             history.file_size = round(file_size, 2)
             history.duration_seconds = round(duration, 2)
-            history.completed_at = datetime.now()
+            history.completed_at = _now()
 
             running_tasks[profile_id]["status"] = "success"
             running_tasks[profile_id]["records"] = len(records)
@@ -128,59 +256,91 @@ async def do_extract(profile_id: int):
                 TransferConfig.enabled == True
             ))
             tc = r3.scalar_one_or_none()
-            if tc:
-                import asyncio as _asyncio
+            if tc and conn.pg_host:
+                _log(profile_id, f"開始寫入 PostgreSQL ({conn.pg_host})...")
                 transfer = PostgreSQLTransfer(
-                    host=tc.host,
-                    port=tc.port,
-                    database=tc.database,
-                    username=tc.username,
-                    password=tc.password,
+                    host=conn.pg_host,
+                    port=conn.pg_port or 5432,
+                    database=conn.pg_database,
+                    username=conn.pg_username,
+                    password=conn.pg_password,
                     write_mode=tc.write_mode or "APPEND",
                     upsert_key=tc.upsert_key or "",
                 )
-                result_t = await _asyncio.get_event_loop().run_in_executor(
-                    None, transfer.transfer, records, profile.object_structure, tenant_name
+                result_t = await asyncio.get_event_loop().run_in_executor(
+                    None, transfer.transfer, records, profile.object_structure, tenant_name, child_fields
                 )
                 history.transfer_status = result_t["status"]
+                if result_t["status"] == "success":
+                    _log(profile_id, f"PostgreSQL 主表寫入成功: {result_t.get('table', '')} ({result_t.get('records', 0)} 筆)")
+                    child_tables = result_t.get("child_tables", {})
+                    for ct_name, ct_count in child_tables.items():
+                        _log(profile_id, f"  子表 {ct_name}: {ct_count} 筆")
+                else:
+                    err_msg = result_t.get("error", "未知錯誤")
+                    _log(profile_id, f"PostgreSQL 寫入失敗: {err_msg}")
+                    history.error_message = f"Transfer failed: {err_msg}"
             else:
                 history.transfer_status = "none"
+
+            _log(profile_id, f"全部完成 ({duration:.1f}s)")
 
         except Exception as e:
             duration = time.time() - start_time
             history.status = "failed"
             history.error_message = str(e)
             history.duration_seconds = round(duration, 2)
-            history.completed_at = datetime.now()
+            history.completed_at = _now()
             history.transfer_status = "none"
             running_tasks[profile_id]["status"] = "failed"
+            _log(profile_id, f"執行失敗: {str(e)}")
 
         await db.commit()
 
-        # Clean up running task after a while
-        await asyncio.sleep(5)
+        # Keep task info for a while so frontend can read final status/logs
+        await asyncio.sleep(10)
         running_tasks.pop(profile_id, None)
 
-import asyncio
 
 @router.post("/run")
 async def run_extract(req: ExtractRequest, background_tasks: BackgroundTasks):
     if req.profile_id in running_tasks and running_tasks[req.profile_id]["status"] == "running":
         raise HTTPException(400, "Extraction already running for this profile")
+    running_tasks[req.profile_id] = {
+        "history_id": None,
+        "records": 0,
+        "status": "running",
+        "started_at": time.time(),
+        "logs": [],
+        "cancelled": False,
+    }
     background_tasks.add_task(do_extract, req.profile_id)
     return {"message": "Extraction started", "profile_id": req.profile_id}
+
+
+@router.post("/cancel/{profile_id}")
+async def cancel_extract(profile_id: int):
+    task = running_tasks.get(profile_id)
+    if not task or task["status"] != "running":
+        raise HTTPException(400, "No running extraction for this profile")
+    task["cancelled"] = True
+    _log(profile_id, "收到中斷請求，等待當前頁面完成...")
+    return {"message": "Cancel requested", "profile_id": profile_id}
+
 
 @router.get("/status/{profile_id}")
 async def get_status(profile_id: int):
     task = running_tasks.get(profile_id)
     if not task:
-        return {"status": "idle"}
+        return {"status": "idle", "logs": []}
     return {
         "status": task["status"],
         "records": task["records"],
         "history_id": task.get("history_id"),
         "elapsed": round(time.time() - task["started_at"], 1),
+        "logs": task.get("logs", []),
     }
+
 
 @router.get("/download/{history_id}")
 async def download_file(history_id: int, db: AsyncSession = Depends(get_db)):

@@ -1,23 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from typing import Optional
 import csv
 import os
+import json
 import asyncpg
 
 from app.database import get_db
-from app.models import ExecutionHistory
+from app.models import ExecutionHistory, FieldMetadata
 
 router = APIRouter(prefix="/api/preview", tags=["preview"])
 
 # PostgreSQL 連線設定
 PG_CONFIG = {
-    "host": os.getenv("POSTGRES_HOST", "localhost"),
+    "host": os.getenv("POSTGRES_HOST", "postgres"),
     "port": int(os.getenv("POSTGRES_PORT", "5432")),
-    "database": os.getenv("POSTGRES_DB", "finrecorder"),
-    "user": os.getenv("POSTGRES_USER", "finrecorder"),
-    "password": os.getenv("POSTGRES_PASSWORD", "finrecorder123"),
+    "database": os.getenv("POSTGRES_DB", "maximo_data"),
+    "user": os.getenv("POSTGRES_USER", "maximo"),
+    "password": os.getenv("POSTGRES_PASSWORD", "maximo2026"),
 }
 
 @router.get("/csv/{history_id}")
@@ -25,33 +26,41 @@ async def preview_csv(
     history_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
+    sort_by: Optional[str] = Query(None),
+    sort_order: Optional[str] = Query("asc", regex="^(asc|desc)$"),
     db: AsyncSession = Depends(get_db)
 ):
     """預覽 CSV 檔案內容"""
     result = await db.execute(select(ExecutionHistory).where(ExecutionHistory.id == history_id))
     history = result.scalar_one_or_none()
-    
+
     if not history:
         raise HTTPException(404, "History record not found")
-    
+
     if not history.file_path or not os.path.exists(history.file_path):
         raise HTTPException(404, "CSV file not found")
-    
+
     try:
-        rows = []
+        all_rows = []
         headers = []
-        total_rows = 0
-        skip = (page - 1) * page_size
-        
+
         with open(history.file_path, 'r', encoding='utf-8') as f:
             reader = csv.reader(f)
             headers = next(reader, [])
-            
-            for i, row in enumerate(reader):
-                total_rows += 1
-                if i >= skip and len(rows) < page_size:
-                    rows.append(row)
-        
+            all_rows = list(reader)
+
+        total_rows = len(all_rows)
+
+        # 排序
+        if sort_by and sort_by in headers:
+            sort_idx = headers.index(sort_by)
+            reverse = sort_order == "desc"
+            all_rows.sort(key=lambda r: r[sort_idx] if sort_idx < len(r) else "", reverse=reverse)
+
+        # 分頁
+        skip = (page - 1) * page_size
+        rows = all_rows[skip:skip + page_size]
+
         return {
             "headers": headers,
             "rows": rows,
@@ -66,21 +75,36 @@ async def preview_csv(
         raise HTTPException(500, f"Failed to read CSV: {str(e)}")
 
 @router.get("/db/tables")
-async def list_db_tables():
-    """列出所有 maximo_* 資料表"""
+async def list_db_tables(
+    tenant_id: Optional[int] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出所有使用者建立的資料表，可依租戶篩選"""
+    # If tenant_id provided, look up tenant name for table prefix filtering
+    tenant_prefix = None
+    if tenant_id is not None:
+        from app.models import Tenant
+        result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+        tenant = result.scalar_one_or_none()
+        if tenant:
+            tenant_prefix = tenant.name.lower() + "_"
+
     try:
-        conn = await asyncpg.connect(**PG_CONFIG)
+        pg_conn = await asyncpg.connect(**PG_CONFIG)
         try:
-            rows = await conn.fetch("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public' 
-                AND table_name LIKE 'maximo_%'
+            rows = await pg_conn.fetch("""
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                AND table_type = 'BASE TABLE'
                 ORDER BY table_name
             """)
-            return {"tables": [row["table_name"] for row in rows]}
+            tables = [row["table_name"] for row in rows]
+            if tenant_prefix:
+                tables = [t for t in tables if t.startswith(tenant_prefix)]
+            return {"tables": tables}
         finally:
-            await conn.close()
+            await pg_conn.close()
     except Exception as e:
         raise HTTPException(500, f"Database connection failed: {str(e)}")
 
@@ -89,45 +113,98 @@ async def preview_db_table(
     table_name: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
+    sort_by: Optional[str] = Query(None),
+    sort_order: Optional[str] = Query("asc", regex="^(asc|desc)$"),
+    filters: Optional[str] = Query(None, description="JSON 物件，每個欄位的關鍵字篩選，例如 {\"assetnum\":\"TRA\",\"status\":\"OPERATING\"}"),
+    db: AsyncSession = Depends(get_db),
 ):
     """預覽資料庫表內容"""
-    # 安全檢查：只允許 maximo_ 開頭的表
-    if not table_name.startswith("maximo_"):
-        raise HTTPException(400, "Only maximo_* tables are allowed")
-    
-    # 防止 SQL injection
+    # 防止 SQL injection：只允許字母、數字、底線
     if not table_name.replace("_", "").isalnum():
         raise HTTPException(400, "Invalid table name")
-    
+
     try:
         conn = await asyncpg.connect(**PG_CONFIG)
         try:
-            # 取得總筆數
-            count_result = await conn.fetchval(f'SELECT COUNT(*) FROM "{table_name}"')
-            total_rows = count_result or 0
-            
             # 取得欄位名稱
             columns_result = await conn.fetch(f"""
-                SELECT column_name 
-                FROM information_schema.columns 
+                SELECT column_name
+                FROM information_schema.columns
                 WHERE table_name = $1
                 ORDER BY ordinal_position
             """, table_name)
             headers = [col["column_name"] for col in columns_result]
-            
-            # 分頁查詢
-            offset = (page - 1) * page_size
-            rows_result = await conn.fetch(
-                f'SELECT * FROM "{table_name}" LIMIT $1 OFFSET $2',
-                page_size, offset
+
+            # 解析每欄篩選條件
+            column_filters = {}
+            if filters:
+                try:
+                    column_filters = json.loads(filters)
+                except json.JSONDecodeError:
+                    pass
+
+            # 建立 WHERE 條件（每個欄位獨立 ILIKE）
+            where_clauses = []
+            query_params = []
+            param_idx = 1
+            for col, keyword in column_filters.items():
+                if col in headers and keyword and str(keyword).strip():
+                    where_clauses.append(f'CAST("{col}" AS TEXT) ILIKE ${param_idx}')
+                    query_params.append(f"%{str(keyword).strip()}%")
+                    param_idx += 1
+
+            where_clause = ""
+            if where_clauses:
+                where_clause = "WHERE " + " AND ".join(where_clauses)
+
+            # 取得總筆數（含篩選條件）
+            count_result = await conn.fetchval(
+                f'SELECT COUNT(*) FROM "{table_name}" {where_clause}',
+                *query_params
             )
-            
+            total_rows = count_result or 0
+
+            # 從表名推斷 object_structure（格式: {tenant}_{os}）
+            field_titles = {}
+            os_name = None
+            parts = table_name.split("_")
+            for i in range(len(parts)):
+                candidate = "_".join(parts[i:]).upper()
+                if candidate.startswith("MX") or candidate.startswith("REP_"):
+                    os_name = candidate
+                    break
+            if os_name:
+                fm_result = await db.execute(
+                    select(FieldMetadata).where(
+                        FieldMetadata.object_structure == os_name
+                    )
+                )
+                for fm in fm_result.scalars().all():
+                    if fm.title:
+                        field_titles[fm.field_name] = fm.title
+
+            # 分頁查詢（含排序與搜尋）
+            offset = (page - 1) * page_size
+            order_clause = ""
+            if sort_by and sort_by in headers:
+                direction = "DESC" if sort_order == "desc" else "ASC"
+                order_clause = f'ORDER BY "{sort_by}" {direction}'
+
+            # 分頁參數接在搜尋參數後面
+            limit_param = f"${param_idx}"
+            offset_param = f"${param_idx + 1}"
+            rows_result = await conn.fetch(
+                f'SELECT * FROM "{table_name}" {where_clause} {order_clause} LIMIT {limit_param} OFFSET {offset_param}',
+                *query_params, page_size, offset
+            )
+
             # 轉換為 list of lists
             rows = [[str(v) if v is not None else "" for v in row.values()] for row in rows_result]
-            
+
             return {
                 "table_name": table_name,
                 "headers": headers,
+                "field_titles": field_titles,
                 "rows": rows,
                 "total_rows": total_rows,
                 "page": page,

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Database cylinder -->
+  <ellipse cx="22" cy="16" rx="16" ry="6" fill="#3B82F6" opacity="0.9"/>
+  <rect x="6" y="16" width="32" height="24" fill="#3B82F6" opacity="0.9"/>
+  <ellipse cx="22" cy="40" rx="16" ry="6" fill="#2563EB"/>
+  <ellipse cx="22" cy="16" rx="16" ry="6" fill="#60A5FA"/>
+  <ellipse cx="22" cy="24" rx="16" ry="6" fill="#3B82F6" opacity="0.5"/>
+  <ellipse cx="22" cy="32" rx="16" ry="6" fill="#3B82F6" opacity="0.3"/>
+  <!-- Arrow pointing right -->
+  <path d="M42 28 L54 28 L54 22 L64 32 L54 42 L54 36 L42 36 Z" fill="#F59E0B"/>
+</svg>

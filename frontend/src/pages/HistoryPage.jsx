@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Download, Trash2, RefreshCw, AlertCircle, CheckCircle, XCircle, Clock } from 'lucide-react'
 import { listHistory, deleteHistory, clearHistory, downloadFile } from '../api/index.js'
+import { useTenant } from '../App.jsx'
 
 function StatusIcon({ status }) {
   if (status === 'success') return <CheckCircle className="w-4 h-4 text-green-500" />
@@ -19,11 +20,12 @@ function TransferBadge({ status }) {
 
 export default function HistoryPage() {
   const qc = useQueryClient()
+  const { tenantId } = useTenant()
   const [expandedId, setExpandedId] = useState(null)
 
   const { data: history = [], isLoading, refetch } = useQuery({
-    queryKey: ['history'],
-    queryFn: () => listHistory(100),
+    queryKey: ['history', tenantId],
+    queryFn: () => listHistory(100, tenantId),
     refetchInterval: 5000,
   })
 

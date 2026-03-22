@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
+from typing import Optional
 from app.database import get_db
-from app.models import ExecutionHistory
+from app.models import ExecutionHistory, ExtractProfile, Connection
 
 router = APIRouter(prefix="/api/history", tags=["history"])
 
@@ -23,12 +24,28 @@ def history_to_dict(h: ExecutionHistory) -> dict:
     }
 
 @router.get("")
-async def list_history(limit: int = 50, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(ExecutionHistory)
-        .order_by(ExecutionHistory.started_at.desc())
-        .limit(limit)
-    )
+async def list_history(
+    limit: int = 50,
+    tenant_id: Optional[int] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    if tenant_id is not None:
+        # Filter history by tenant: history -> profile -> connection -> tenant_id
+        query = (
+            select(ExecutionHistory)
+            .join(ExtractProfile, ExecutionHistory.profile_id == ExtractProfile.id)
+            .join(Connection, ExtractProfile.connection_id == Connection.id)
+            .where(Connection.tenant_id == tenant_id)
+            .order_by(ExecutionHistory.started_at.desc())
+            .limit(limit)
+        )
+    else:
+        query = (
+            select(ExecutionHistory)
+            .order_by(ExecutionHistory.started_at.desc())
+            .limit(limit)
+        )
+    result = await db.execute(query)
     return [history_to_dict(h) for h in result.scalars().all()]
 
 @router.get("/{history_id}")
